@@ -1,7 +1,7 @@
 name: Mise à jour des calendriers
 
 # Copie les calendriers iCal du site (OVH) vers GitHub Pages toutes les
-# 10 minutes. Booking.com lit la copie sur github.io : le pare-feu du
+# 5 minutes. Booking.com lit la copie sur github.io : le pare-feu du
 # cluster OVH renvoie 403 à certaines requêtes automatisées (dont celles
 # sans user-agent), GitHub Pages non.
 #
@@ -9,7 +9,7 @@ name: Mise à jour des calendriers
 #   https://nouakil63.github.io/calendriers/calendar-<ID>.ics
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
   push:
     branches: [main]
