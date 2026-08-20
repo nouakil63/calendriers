@@ -1,0 +1,108 @@
+name: Mise à jour des calendriers
+
+# Copie les calendriers iCal du site (OVH) vers GitHub Pages toutes les
+# 10 minutes. Booking.com lit la copie sur github.io : le pare-feu du
+# cluster OVH renvoie 403 à certaines requêtes automatisées (dont celles
+# sans user-agent), GitHub Pages non.
+#
+# Adresse publique d'un calendrier (à coller dans Booking) :
+#   https://nouakil63.github.io/calendriers/calendar-<ID>.ics
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/update.yml'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  miroir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Récupérer les calendriers depuis le site
+        run: |
+          mkdir -p public
+          ORIGIN="https://calendrier.la-conciergerie-deauville.com"
+          # Liste des calendriers : publiée par le site si disponible, sinon
+          # la liste de secours ci-dessous (à compléter si un logement est créé).
+          IDS_SECOURS="50506 50507 50508 50509 50510 50511 50512 50513 50514 50515 50516 50517 50518 50519 50520 50521 50522"
+          if curl -fsS --max-time 15 -A "CDV-Mirror/1.0" "$ORIGIN/feeds/liste.csv" -o /tmp/liste 2>/dev/null; then
+            IDS=$(tr -d '\r' < /tmp/liste | grep -oE '^[0-9]+' | sort -u)
+            echo "Liste fournie par le site."
+          else
+            IDS="$IDS_SECOURS"
+            echo "Liste de secours intégrée."
+          fi
+          ok=0; ko=0
+          for id in $IDS; do
+            if curl -fsS --max-time 20 -A "CDV-Mirror/1.0" "$ORIGIN/calendar-$id.ics" -o /tmp/cal.ics \
+               && head -c 20 /tmp/cal.ics | grep -q 'BEGIN:VCALENDAR'; then
+              mv /tmp/cal.ics "public/calendar-$id.ics"
+              ok=$((ok+1))
+            else
+              # Échec : on GARDE la copie précédente (jamais de calendrier perdu).
+              echo "⚠️ calendar-$id.ics : récupération impossible, copie précédente conservée"
+              ko=$((ko+1))
+            fi
+          done
+          echo "✅ $ok récupéré(s), $ko en échec"
+          test "$ok" -gt 0
+
+      - name: Committer les changements
+        run: |
+          git config user.name "cdv-mirror"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A public
+          if git diff --cached --quiet; then
+            echo "Aucun changement depuis le dernier passage."
+          else
+            git commit -m "Mise à jour des calendriers"
+            git push
+          fi
+
+      - name: Activer / configurer GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Préparer l'artefact Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Déployer sur GitHub Pages
+        uses: actions/deploy-pages@v4
+
+      - name: Vérifier l'adresse publique (conditions Booking)
+        run: |
+          URL="https://nouakil63.github.io/calendriers/calendar-50510.ics"
+          echo "Cible : $URL"
+          for i in 1 2 3 4 5 6; do
+            CODE=$(curl -s -o /tmp/check -D /tmp/hdr -w '%{http_code}' --max-time 20 -A "Java/17.0.2" "$URL" || true)
+            if [ "$CODE" = "200" ] && head -c 20 /tmp/check | grep -q 'BEGIN:VCALENDAR'; then
+              echo "✅ HTTP 200 + VCALENDAR (avec user-agent)"
+              grep -i '^content-type' /tmp/hdr || true
+              break
+            fi
+            echo "Tentative $i : HTTP $CODE — nouvel essai dans 10 s"
+            if [ "$i" = "6" ]; then exit 1; fi
+            sleep 10
+          done
+          CODE=$(curl -s -o /tmp/check2 -w '%{http_code}' --max-time 20 -A "" "$URL" || true)
+          echo "Sans user-agent : HTTP $CODE"
+          test "$CODE" = "200"
+          head -c 20 /tmp/check2 | grep -q 'BEGIN:VCALENDAR'
+          echo "✅ Adresse opérationnelle, y compris SANS user-agent (le cas qui bloquait chez OVH)"
